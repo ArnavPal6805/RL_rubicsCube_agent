@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Rubik's Cube Solver (Custom Engine)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Reliable Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.min.js"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --void: #0a0406;
+            --panel: #16080c;
+            --panel-2: #1c0a10;
+            --line: rgba(255, 60, 74, 0.25);
+            --line-bright: rgba(255, 60, 74, 0.6);
+            --cyan: #ff3347;
+            --cyan-dim: #a31a26;
+            --amber: #ffb020;
+            --magenta: #ff5cf0;
+            --green: #3dffa4;
+            --ink: #f5dfe1;
+            --ink-dim: #96707a;
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body {
+            background: var(--void);
+            color: var(--ink);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        body {
+            min-height: 100vh;
+            background-image:
+                linear-gradient(rgba(255, 51, 71, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 51, 71, 0.05) 1px, transparent 1px),
+                radial-gradient(ellipse at 20% -10%, rgba(255, 51, 71, 0.12), transparent 55%),
+                radial-gradient(ellipse at 100% 110%, rgba(255, 140, 30, 0.07), transparent 50%);
+            background-size: 42px 42px, 42px 42px, 100% 100%, 100% 100%;
+            background-attachment: fixed;
+        }
+
+        h1, h2, .font-display { font-family: 'Orbitron', 'JetBrains Mono', sans-serif; }
+
+        /* ---- Scanline sweep: one ambient, subtle signature effect ---- */
+        .scan-sweep {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 50;
+            background: linear-gradient(180deg, transparent 0%, rgba(255, 51, 71, 0.035) 50%, transparent 100%);
+            height: 220px;
+            animation: sweep 9s linear infinite;
+            mix-blend-mode: screen;
+        }
+        @keyframes sweep {
+            0% { transform: translateY(-220px); }
+            100% { transform: translateY(100vh); }
+        }
+
+        /* ---- Title boot-in, a single orchestrated moment ---- */
+        .boot-in {
+            animation: boot 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+        }
+        @keyframes boot {
+            0% { opacity: 0; letter-spacing: 0.4em; filter: blur(4px); }
+            100% { opacity: 1; letter-spacing: 0.02em; filter: blur(0); }
+        }
+
+        /* ---- HUD panel: angular cut corners instead of rounded cards ---- */
+        .hud-panel {
+            position: relative;
+            background: linear-gradient(180deg, var(--panel), var(--panel-2));
+            border: 1px solid var(--line);
+            clip-path: polygon(0 14px, 14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%);
+            padding: 1.5rem;
+        }
+        .hud-panel::before,
+        .hud-panel::after {
+            content: "";
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            border: 1.5px solid var(--cyan);
+            opacity: 0.85;
+        }
+        .hud-panel::before { top: -1px; right: -1px; border-left: none; border-bottom: none; }
+        .hud-panel::after { bottom: -1px; left: -1px; border-right: none; border-top: none; }
+
+        /* ---- Corner reticle overlay for the cube viewport ---- */
+        .reticle-frame { position: relative; }
+        .reticle-frame .corner {
+            position: absolute;
+            width: 22px;
+            height: 22px;
+            border-color: var(--cyan);
+            border-style: solid;
+            opacity: 0.75;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .reticle-frame .tl { top: 10px; left: 10px; border-width: 2px 0 0 2px; }
+        .reticle-frame .tr { top: 10px; right: 10px; border-width: 2px 2px 0 0; }
+        .reticle-frame .bl { bottom: 10px; left: 10px; border-width: 0 0 2px 2px; }
+        .reticle-frame .br { bottom: 10px; right: 10px; border-width: 0 2px 2px 0; }
+
+        #cube-container {
+            width: 100%;
+            height: 400px;
+            background:
+                radial-gradient(ellipse at 50% 30%, rgba(255,51,71,0.08), transparent 60%),
+                var(--void);
+            border: 1px solid var(--line);
+            overflow: hidden;
+            cursor: grab;
+        }
+        #cube-container:active { cursor: grabbing; }
+
+        /* ---- Buttons: angular, glowing, no rounded-default look ---- */
+        .btn-tech {
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            font-size: 0.8rem;
+            color: #120406;
+            background: var(--cyan);
+            border: 1px solid var(--cyan);
+            clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+            padding: 0.85rem 1rem;
+            transition: transform 0.12s ease, box-shadow 0.2s ease, background 0.2s ease;
+            box-shadow: 0 0 0 rgba(255,51,71,0);
+        }
+        .btn-tech:hover:not(:disabled) {
+            background: #ff5f70;
+            box-shadow: 0 0 22px rgba(255, 51, 71, 0.45);
+            transform: translateY(-1px);
+        }
+        .btn-tech:disabled { opacity: 0.35; cursor: not-allowed; }
+
+        .btn-tech.amber { background: var(--amber); border-color: var(--amber); }
+        .btn-tech.amber:hover:not(:disabled) { background: #ffc659; box-shadow: 0 0 22px rgba(255, 176, 32, 0.4); }
+
+        .btn-ghost {
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+            font-size: 0.8rem;
+            letter-spacing: 0.03em;
+            color: var(--cyan);
+            background: rgba(255, 51, 71, 0.06);
+            border: 1px solid var(--line-bright);
+            clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+            padding: 0.6rem 1rem;
+            transition: background 0.15s ease, box-shadow 0.2s ease;
+        }
+        .btn-ghost:hover { background: rgba(255, 51, 71, 0.16); box-shadow: 0 0 14px rgba(255,51,71,0.25); }
+
+        .move-btn {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            background: rgba(255, 51, 71, 0.05);
+            border: 1px solid var(--line);
+            color: var(--ink);
+            transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+        }
+        .move-btn:hover {
+            background: rgba(255, 51, 71, 0.18);
+            border-color: var(--cyan);
+            color: var(--cyan);
+        }
+
+        .field-tech {
+            background: var(--void);
+            border: 1px solid var(--line);
+            color: var(--ink);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .field-tech:focus {
+            outline: none;
+            border-color: var(--cyan);
+            box-shadow: 0 0 0 3px rgba(255, 51, 71, 0.12);
+        }
+
+        .label-tag {
+            font-size: 0.68rem;
+            letter-spacing: 0.08em;
+            color: var(--ink-dim);
+        }
+
+        .divider-line {
+            border-bottom: 1px solid var(--line);
+        }
+
+        #inference-log::-webkit-scrollbar { width: 6px; }
+        #inference-log::-webkit-scrollbar-track { background: var(--void); }
+        #inference-log::-webkit-scrollbar-thumb { background: var(--cyan-dim); }
+
+        .status-dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            background: currentColor;
+            box-shadow: 0 0 8px currentColor;
+            margin-right: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="scan-sweep"></div>
+
+    <div class="max-w-6xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+        <!-- Left Panel: 3D Visualization & Controls -->
+        <div class="lg:col-span-2 space-y-6">
+            <div class="boot-in">
+                <h1 class="text-3xl font-display font-800 text-[var(--cyan)]" style="text-shadow: 0 0 18px rgba(255,51,71,0.35);">AI RUBIK'S CUBE SOLVER</h1>
+                <p class="label-tag mt-2">CUSTOM THREE.JS ENGINE // PYTORCH CFOP AGENT</p>
+            </div>
+
+            <!-- Custom 3D Cube Visualizer -->
+            <div class="hud-panel reticle-frame">
+                <div class="corner tl"></div>
+                <div class="corner tr"></div>
+                <div class="corner bl"></div>
+                <div class="corner br"></div>
+                <div id="cube-container"></div>
+                <p class="label-tag mt-3 text-center">DRAG TO ORBIT CAMERA — SCROLL TO ZOOM</p>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex space-x-4">
+                <button id="btn-shuffle" class="btn-tech amber flex-1">
+                    ⟲ RANDOM SCRAMBLE
+                </button>
+                <button id="btn-solve" class="btn-tech flex-1" disabled>
+                    ▶ AI SOLVE
+                </button>
+            </div>
+
+            <!-- Manual Move Controls (Expanded for R, L, U, D, F, B) -->
+            <div class="hud-panel">
+                <span class="label-tag block mb-3 text-center">MANUAL TURN CONTROLS</span>
+                <div class="grid grid-cols-6 gap-2 text-center">
+                    <button class="move-btn py-2 text-sm" data-move="R">R</button>
+                    <button class="move-btn py-2 text-sm" data-move="R'">R'</button>
+                    <button class="move-btn py-2 text-sm" data-move="L">L</button>
+                    <button class="move-btn py-2 text-sm" data-move="L'">L'</button>
+                    <button class="move-btn py-2 text-sm" data-move="U">U</button>
+                    <button class="move-btn py-2 text-sm" data-move="U'">U'</button>
+                    <button class="move-btn py-2 text-sm" data-move="D">D</button>
+                    <button class="move-btn py-2 text-sm" data-move="D'">D'</button>
+                    <button class="move-btn py-2 text-sm" data-move="F">F</button>
+                    <button class="move-btn py-2 text-sm" data-move="F'">F'</button>
+                    <button class="move-btn py-2 text-sm" data-move="B">B</button>
+                    <button class="move-btn py-2 text-sm" data-move="B'">B'</button>
+                </div>
+            </div>
+
+            <!-- Custom Scramble Input -->
+            <div class="hud-panel">
+                <label for="custom-scramble" class="label-tag block mb-2">TEST CUSTOM SCRAMBLE</label>
+                <div class="flex space-x-2">
+                    <input type="text" id="custom-scramble" class="field-tech flex-1 p-2 text-sm" placeholder="e.g., R U L' B'">
+                    <button id="btn-load-custom" class="btn-ghost">
+                        APPLY
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: ML Dashboard -->
+        <div class="space-y-6">
+            <div class="hud-panel h-full">
+                <h2 class="text-lg font-display font-700 divider-line pb-3 mb-4 tracking-wide">AGENT DASHBOARD</h2>
+
+                <div class="mb-4">
+                    <span class="label-tag block mb-1">AGENT STATUS</span>
+                    <span id="agent-status" class="text-sm font-mono text-[var(--green)]"><span class="status-dot"></span>READY</span>
+                </div>
+
+                <div class="mb-4">
+                    <span class="label-tag block mb-1">SCRAMBLE STRING</span>
+                    <div id="scramble-display" class="bg-[var(--void)] border border-[var(--line)] p-2 text-xs text-[var(--ink-dim)] break-words min-h-[40px]">None</div>
+                </div>
+
+                <div>
+                    <span class="label-tag block mb-2">LIVE INFERENCE LOG</span>
+                    <div id="inference-log" class="bg-[var(--void)] p-3 text-xs h-64 overflow-y-auto space-y-2 border border-[var(--line)]">
+                        <div class="text-[var(--ink-dim)]">Waiting for inference...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Three.js Cube Logic -->
+    <script>
+        const container = document.getElementById('cube-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 100);
+        camera.position.set(5, 4, 6);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enablePan = false;
+        controls.enableDamping = true;
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.4);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
+
+        const cubies = [];
+        const pivot = new THREE.Object3D();
+        scene.add(pivot);
+
+        const C = { R: 0xb71234, L: 0xff5800, U: 0xffffff, D: 0xffd500, F: 0x009b48, B: 0x0046ad, INSIDE: 0x0a0e16 };
+
+        function createCube() {
+            cubies.forEach(c => scene.remove(c));
+            cubies.length = 0;
+
+            for (let x = -1; x <= 1; x++) {
+                for (let y = -1; y <= 1; y++) {
+                    for (let z = -1; z <= 1; z++) {
+                        const mats = [
+                            new THREE.MeshPhongMaterial({ color: x === 1 ? C.R : C.INSIDE, shininess: 30 }),
+                            new THREE.MeshPhongMaterial({ color: x === -1 ? C.L : C.INSIDE, shininess: 30 }),
+                            new THREE.MeshPhongMaterial({ color: y === 1 ? C.U : C.INSIDE, shininess: 30 }),
+                            new THREE.MeshPhongMaterial({ color: y === -1 ? C.D : C.INSIDE, shininess: 30 }),
+                            new THREE.MeshPhongMaterial({ color: z === 1 ? C.F : C.INSIDE, shininess: 30 }),
+                            new THREE.MeshPhongMaterial({ color: z === -1 ? C.B : C.INSIDE, shininess: 30 })
+                        ];
+                        const geo = new THREE.BoxGeometry(0.95, 0.95, 0.95);
+                        const mesh = new THREE.Mesh(geo, mats);
+                        mesh.position.set(x, y, z);
+                        scene.add(mesh);
+                        cubies.push(mesh);
+                    }
+                }
+            }
+        }
+        createCube();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        let isAnimating = false;
+
+        function rotateFace(moveStr, durationMs = 250) {
+            return new Promise((resolve) => {
+                if (isAnimating) {
+                    setTimeout(() => rotateFace(moveStr, durationMs).then(resolve), 30);
+                    return;
+                }
+                isAnimating = true;
+
+                const face = moveStr[0];
+                const isPrime = moveStr.includes("'");
+                const isDouble = moveStr.includes("2");
+
+                let axis = new THREE.Vector3();
+                let angle = (Math.PI / 2) * (isPrime ? 1 : -1) * (isDouble ? 2 : 1);
+                let condition = () => false;
+
+                if (face === 'R') { axis.set(1, 0, 0); condition = m => Math.round(m.position.x) === 1; angle *= -1; }
+                else if (face === 'L') { axis.set(1, 0, 0); condition = m => Math.round(m.position.x) === -1; angle *= 1; }
+                else if (face === 'U') { axis.set(0, 1, 0); condition = m => Math.round(m.position.y) === 1; angle *= -1; }
+                else if (face === 'D') { axis.set(0, 1, 0); condition = m => Math.round(m.position.y) === -1; angle *= 1; }
+                else if (face === 'F') { axis.set(0, 0, 1); condition = m => Math.round(m.position.z) === 1; angle *= -1; }
+                else if (face === 'B') { axis.set(0, 0, 1); condition = m => Math.round(m.position.z) === -1; angle *= 1; }
+
+                const activeCubies = cubies.filter(condition);
+                activeCubies.forEach(m => pivot.attach(m));
+
+                const startAngle = 0;
+                let startTime = null;
+
+                function animateStep(time) {
+                    if (!startTime) startTime = time;
+                    const elapsed = time - startTime;
+                    const progress = Math.min(elapsed / durationMs, 1.0);
+
+                    const ease = progress < 0.5 ? 2 * progress * progress : -1 + (4 - 2 * progress) * progress;
+                    pivot.setRotationFromAxisAngle(axis, startAngle + angle * ease);
+
+                    if (progress < 1.0) {
+                        requestAnimationFrame(animateStep);
+                    } else {
+                        pivot.setRotationFromAxisAngle(axis, startAngle + angle);
+                        pivot.updateMatrixWorld();
+
+                        activeCubies.forEach(m => {
+                            scene.attach(m);
+                            m.position.x = Math.round(m.position.x);
+                            m.position.y = Math.round(m.position.y);
+                            m.position.z = Math.round(m.position.z);
+
+                            m.quaternion.x = Math.round(m.quaternion.x * 1000) / 1000;
+                            m.quaternion.y = Math.round(m.quaternion.y * 1000) / 1000;
+                            m.quaternion.z = Math.round(m.quaternion.z * 1000) / 1000;
+                            m.quaternion.w = Math.round(m.quaternion.w * 1000) / 1000;
+                            m.quaternion.normalize();
+                        });
+
+                        pivot.rotation.set(0, 0, 0);
+                        isAnimating = false;
+                        resolve();
+                    }
+                }
+                requestAnimationFrame(animateStep);
+            });
+        }
+
+        async function executeSequence(scrambleStr, speed = 120) {
+            if(!scrambleStr) return;
+            const moves = scrambleStr.trim().split(/\s+/);
+            for (let move of moves) {
+                if(move) await rotateFace(move, speed);
+            }
+        }
+
+        let currentScrambleAlg = "";
+        const btnSolve = document.getElementById("btn-solve");
+        const btnShuffle = document.getElementById("btn-shuffle");
+        const agentStatus = document.getElementById("agent-status");
+        const inferenceLog = document.getElementById("inference-log");
+        const scrambleDisplay = document.getElementById("scramble-display");
+
+        document.querySelectorAll('.move-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const move = e.target.getAttribute('data-move');
+                await rotateFace(move, 150);
+                currentScrambleAlg += ` ${move}`;
+                btnSolve.disabled = false;
+            });
+        });
+
+        const availableMoves = ["U", "U'", "U2", "D", "D'", "D2", "F", "F'", "F2", "B", "B'", "B2", "L", "L'", "L2", "R", "R'", "R2"];
+        btnShuffle.addEventListener('click', async () => {
+            createCube();
+            let scramble = [];
+            let lastMove = "";
+            for(let i = 0; i < 20; i++) {
+                let nextMove;
+                do { nextMove = availableMoves[Math.floor(Math.random() * availableMoves.length)]; }
+                while (lastMove && nextMove[0] === lastMove[0]);
+                scramble.push(nextMove);
+                lastMove = nextMove;
+            }
+            currentScrambleAlg = scramble.join(" ");
+            scrambleDisplay.innerText = currentScrambleAlg;
+            agentStatus.innerHTML = '<span class="status-dot"></span>SCRAMBLING VISUALS...';
+
+            await executeSequence(currentScrambleAlg, 60);
+
+            agentStatus.innerHTML = '<span class="status-dot"></span>SCRAMBLED - READY';
+            agentStatus.className = "text-sm font-mono text-[var(--amber)]";
+            btnSolve.disabled = false;
+            inferenceLog.innerHTML = '<div class="text-[var(--ink-dim)]">Waiting for inference...</div>';
+        });
+
+        document.getElementById('btn-load-custom').addEventListener('click', async () => {
+            const input = document.getElementById('custom-scramble').value;
+            if(!input) return;
+            createCube();
+            currentScrambleAlg = input;
+            scrambleDisplay.innerText = currentScrambleAlg;
+            await executeSequence(currentScrambleAlg, 80);
+            btnSolve.disabled = false;
+            inferenceLog.innerHTML = '<div class="text-[var(--ink-dim)]">Waiting for inference...</div>';
+            agentStatus.innerHTML = '<span class="status-dot"></span>CUSTOM SCRAMBLE - READY';
+        });
+
+        btnSolve.addEventListener('click', async () => {
+            btnSolve.disabled = true;
+            agentStatus.innerHTML = '<span class="status-dot"></span>INFERRING FROM MODEL...';
+            agentStatus.className = "text-sm font-mono text-[var(--cyan)]";
+            inferenceLog.innerHTML = '';
+
+            try {
+                const response = await fetch("/solve", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ scramble_alg: currentScrambleAlg })
+                });
+                const data = await response.json();
+
+                if (data.status === "success") {
+                    agentStatus.innerHTML = '<span class="status-dot"></span>SOLVING CUBE...';
+                    agentStatus.className = "text-sm font-mono text-[var(--green)]";
+
+                    for (let i = 0; i < data.ml_metadata.length; i++) {
+                        const step = data.ml_metadata[i];
+                        const logEntry = document.createElement("div");
+                        const matchColor = step.predicted_move === step.ideal_move ? "text-[var(--green)]" : "text-[var(--amber)]";
+
+                        logEntry.innerHTML = `<span class="text-[var(--cyan)]">[Step ${step.step}]</span> ${step.state_tensor_hash}<br/>Predict: <strong class="${matchColor}">${step.predicted_move}</strong> (Conf: ${(step.confidence * 100).toFixed(1)}%) | Ideal: ${step.ideal_move}`;
+                        inferenceLog.appendChild(logEntry);
+                        inferenceLog.scrollTop = inferenceLog.scrollHeight;
+
+                        await rotateFace(step.ideal_move, 300);
+                    }
+                    agentStatus.innerHTML = '<span class="status-dot"></span>SOLVED';
+                }
+            } catch (err) {
+                console.error(err);
+                agentStatus.innerHTML = '<span class="status-dot"></span>ERROR INFERRING';
+                agentStatus.className = "text-sm font-mono text-[var(--magenta)]";
+            } finally {
+                currentScrambleAlg = "";
+            }
+        });
+    </script>
+</body>
+</html>
